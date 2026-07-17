@@ -2,13 +2,13 @@ require('dotenv').config();
 const fs = require('fs/promises');
 const path = require('path');
 const translate = require('google-translate-api-x');
+const config = require('./config.json');
 
 const baseUrl = 'https://api.helldivers2.dev/api/v1';
 const stateFile = path.join(__dirname, 'game_state.json');
-
 const githubAssetsUrl = 'https://raw.githubusercontent.com/byte-bureau/ministry-of-truth-uplink/main/assets';
 
-const imageDictionary = {
+const fallbackImages = {
     "terminids": `${githubAssetsUrl}/terminids.png`,
     "automatons": `${githubAssetsUrl}/automatons.png`,
     "illuminate": `${githubAssetsUrl}/illuminate.png`,
@@ -16,6 +16,8 @@ const imageDictionary = {
     "dispatch": `${githubAssetsUrl}/dispatch.png`,
     "default_planet": `${githubAssetsUrl}/default_planet.png`
 };
+
+let assetsMap = new Map();
 
 const discord = {
     url: process.env.DISCORD_WEBHOOK_URL,
@@ -61,11 +63,47 @@ const discord = {
     }
 };
 
+async function loadAssetsMap() {
+    try {
+        const files = await fs.readdir(path.join(__dirname, 'assets'));
+        assetsMap = new Map(files.map(f => [f.toLowerCase(), f]));
+    } catch (e) {
+        console.log("» warning: assets folder not found or inaccessible:", e.message);
+    }
+}
+
+function getAssetUrl(name, fallbackKey = "default_planet") {
+    if (!name) return fallbackImages[fallbackKey] || fallbackImages.default_planet;
+
+    const formattedName = name.replace(/\s+/g, '_').toLowerCase();
+
+    const pngKey = `${formattedName}.png`;
+    const webpKey = `${formattedName}.webp`;
+
+    if (assetsMap.has(pngKey)) {
+        return `${githubAssetsUrl}/${assetsMap.get(pngKey)}`;
+    } else if (assetsMap.has(webpKey)) {
+        return `${githubAssetsUrl}/${assetsMap.get(webpKey)}`;
+    }
+
+    const fallbackLower = fallbackKey.toLowerCase();
+    const fallbackPng = `${fallbackLower}.png`;
+    const fallbackWebp = `${fallbackLower}.webp`;
+
+    if (assetsMap.has(fallbackPng)) {
+        return `${githubAssetsUrl}/${assetsMap.get(fallbackPng)}`;
+    } else if (assetsMap.has(fallbackWebp)) {
+        return `${githubAssetsUrl}/${assetsMap.get(fallbackWebp)}`;
+    }
+
+    return fallbackImages[fallbackKey] || fallbackImages.default_planet;
+}
+
 async function getState() {
     try {
         const data = await fs.readFile(stateFile, 'utf8');
         return JSON.parse(data);
-    } catch (error) {
+    } catch {
         return { dispatches: {}, orders: {}, campaigns: {} };
     }
 }
@@ -77,9 +115,9 @@ async function saveState(state) {
 async function translateText(text) {
     if (!text) return "";
     try {
-        const result = await translate(text, { to: 'uk' });
+        const result = await translate(text, { to: config.language });
         return result.text;
-    } catch (error) {
+    } catch {
         return text;
     }
 }
@@ -95,24 +133,8 @@ function generateProgressBar(health, maxHealth) {
 
     const totalBlocks = 10;
     const filledBlocks = Math.round((clampedPercentage / 100) * totalBlocks);
-    const emptyBlocks = totalBlocks - filledBlocks >= 0 ? totalBlocks - filledBlocks : 0;
+    const emptyBlocks = Math.max(0, totalBlocks - filledBlocks);
     return `[${'█'.repeat(filledBlocks)}${'░'.repeat(emptyBlocks)}] ${clampedPercentage.toFixed(1)}%`;
-}
-
-function toTitleCase(str) {
-    if (!str) return "";
-    return str.toLowerCase().split(' ').map(word => {
-        if (/^[ivx]+$/i.test(word)) {
-            return word.toUpperCase();
-        }
-        return word.charAt(0).toUpperCase() + word.slice(1);
-    }).join('_');
-}
-
-function getPlanetImageUrl(planetName) {
-    if (!planetName) return imageDictionary.default_planet;
-    const formattedName = toTitleCase(planetName);
-    return `${githubAssetsUrl}/${formattedName}.png`;
 }
 
 async function fetchGameData() {
@@ -155,7 +177,7 @@ async function fetchGameData() {
             orders: orders,
             campaigns: filteredCampaigns
         };
-    } catch (error) {
+    } catch {
         return null;
     }
 }
@@ -165,10 +187,10 @@ async function buildEmbed(item, type) {
 
     if (type === "dispatches") {
         const translated = await translateText(item.message);
-        title = "УКАЗ ВЕРХОВНОГО КОМАНДУВАННЯ";
+        title = config.templates.dispatchTitle;
         description = formatMarkdown(translated);
         color = 16761088;
-        thumbnail = imageDictionary.dispatch;
+        thumbnail = getAssetUrl("dispatch", "dispatch");
     }
     else if (type === "orders") {
         const translatedBriefing = await translateText(item.briefing);
@@ -177,43 +199,43 @@ async function buildEmbed(item, type) {
         if (item.tasks && item.progress) {
             item.tasks.forEach((task, idx) => {
                 const current = item.progress[idx] || 0;
-
                 let target = 0;
+
                 if (task.values && task.values.length > 1) {
                     target = task.values[1];
                     if (target === 0 && task.values.length > 2) {
                         target = task.values[2];
                     }
                 }
-
                 if (target === 0) target = 1000000;
 
-                taskProgress += `Ціль ${idx + 1}: \`${current.toLocaleString()} / ${target.toLocaleString()}\`\n`;
+                taskProgress += `${config.templates.taskLabel} ${idx + 1}: \`${current.toLocaleString()} / ${target.toLocaleString()}\`\n`;
             });
         }
 
-        title = "ОСНОВНИЙ НАКАЗ";
+        title = config.templates.orderTitle;
         description = `${formatMarkdown(translatedBriefing)}\n\n**Прогрес виконання:**\n${taskProgress}`;
         color = 16761088;
-        thumbnail = imageDictionary.super_earth;
+        thumbnail = getAssetUrl("super_earth", "super_earth");
 
         if (item.reward?.amount && item.reward.amount > 0) {
-            footerText = `Нагорода: ${item.reward.amount} медалей`;
+            footerText = `${config.templates.rewardLabel}: ${item.reward.amount} ${config.templates.rewardUnit}`;
         }
     }
     else if (type === "campaigns") {
         const factionStr = item.faction ? item.faction.toLowerCase() : "unknown";
-        const planetName = item.planet?.name || "Невідома планета";
-        title = `АКТИВНА КАМПАНІЯ: ${planetName.toUpperCase()}`;
+        const planetName = item.planet?.name || config.templates.unknownPlanet;
+        title = `${config.templates.campaignTitle}: ${planetName.toUpperCase()}`;
 
         const health = item.planet?.health || 0;
         const maxHealth = item.planet?.maxHealth || 0;
         const progress = generateProgressBar(health, maxHealth);
         const players = item.planet?.statistics?.playerCount || 0;
 
-        description = `**Фракція:** ${item.faction || "Невідомо"}\n**Прогрес звільнення:**\n\`${progress}\`\n\n👥 **Гравців на планеті:** ${players.toLocaleString()}`;
+        description = `**${config.templates.factionLabel}:** ${item.faction || config.templates.unknownFaction}\n**${config.templates.liberationLabel}:**\n\`${progress}\`\n\n👥 **${config.templates.playersLabel}:** ${players.toLocaleString()}`;
         color = factionStr.includes("terminid") ? 16752640 : factionStr.includes("automaton") ? 16711680 : 3447003;
-        thumbnail = getPlanetImageUrl(planetName);
+
+        thumbnail = getAssetUrl(planetName, factionStr);
     }
 
     const embed = {
@@ -228,7 +250,7 @@ async function buildEmbed(item, type) {
     }
 
     return {
-        username: "Тостер-розвідник із Кіберстану",
+        username: config.botName,
         embeds: [embed]
     };
 }
@@ -271,6 +293,8 @@ async function syncCategory(liveItems, stateCategoryMap, categoryName) {
 
 async function syncEngine() {
     console.log("» initializing dashboard sync...");
+
+    await loadAssetsMap();
 
     const liveData = await fetchGameData();
     if (!liveData) return;

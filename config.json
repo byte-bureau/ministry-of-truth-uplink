@@ -1,0 +1,17 @@
+{
+    "botName": "Тостер-розвідник із Кіберстану",
+    "language": "uk",
+    "templates": {
+        "dispatchTitle": "УКАЗ ВЕРХОВНОГО КОМАНДУВАННЯ",
+        "orderTitle": "ОСНОВНИЙ НАКАЗ",
+        "campaignTitle": "АКТИВНА КАМПАНІЯ",
+        "factionLabel": "Фракція",
+        "liberationLabel": "Прогрес звільнення",
+        "playersLabel": "Гравців на планеті",
+        "taskLabel": "Ціль",
+        "rewardLabel": "Нагорода",
+        "rewardUnit": "медалей",
+        "unknownPlanet": "Невідома планета",
+        "unknownFaction": "Невідомо"
+    }
+}
