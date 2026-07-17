@@ -6,7 +6,7 @@ const translate = require('google-translate-api-x');
 const baseUrl = 'https://api.helldivers2.dev/api/v1';
 const stateFile = path.join(__dirname, 'game_state.json');
 
-const githubAssetsUrl = 'https://github.com/byte-bureau/ministry-of-truth-uplink/main/assets';
+const githubAssetsUrl = 'https://raw.githubusercontent.com/byte-bureau/ministry-of-truth-uplink/main/assets';
 
 const imageDictionary = {
     "terminids": `${githubAssetsUrl}/terminids.png`,
@@ -99,9 +99,19 @@ function generateProgressBar(health, maxHealth) {
     return `[${'█'.repeat(filledBlocks)}${'░'.repeat(emptyBlocks)}] ${clampedPercentage.toFixed(1)}%`;
 }
 
+function toTitleCase(str) {
+    if (!str) return "";
+    return str.toLowerCase().split(' ').map(word => {
+        if (/^[ivx]+$/i.test(word)) {
+            return word.toUpperCase();
+        }
+        return word.charAt(0).toUpperCase() + word.slice(1);
+    }).join('_');
+}
+
 function getPlanetImageUrl(planetName) {
     if (!planetName) return imageDictionary.default_planet;
-    const formattedName = planetName.replace(/ /g, '_');
+    const formattedName = toTitleCase(planetName);
     return `${githubAssetsUrl}/${formattedName}.png`;
 }
 
@@ -218,7 +228,7 @@ async function buildEmbed(item, type) {
     }
 
     return {
-        username: "ministry of truth",
+        username: "Тостер-розвідник із Кіберстану",
         embeds: [embed]
     };
 }
