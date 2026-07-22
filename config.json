@@ -1,6 +1,7 @@
 {
     "botName": "Тостер-розвідник із Кіберстану",
     "language": "uk",
+    "pingRoleId": "",
     "templates": {
         "dispatchTitle": "УКАЗ ВЕРХОВНОГО КОМАНДУВАННЯ",
         "orderTitle": "ОСНОВНИЙ НАКАЗ",
