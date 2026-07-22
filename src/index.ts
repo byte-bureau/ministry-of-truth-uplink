@@ -8,7 +8,10 @@ const stateFile = path.join(__dirname, '../game_state.json');
 const githubAssetsUrl = 'https://raw.githubusercontent.com/byte-bureau/ministry-of-truth-uplink/main/assets';
 const DEFAULT_FALLBACK = `${githubAssetsUrl}/default_planet.png`;
 
+const MIN_SAMPLE_TIME_MS = 3 * 60 * 1000;
+
 interface GameState {
+    translations?: { [sourceText: string]: string };
     dispatches: { [id: string]: string };
     orders: { [id: string]: string };
     campaigns: {
@@ -16,7 +19,8 @@ interface GameState {
             messageId: string;
             lastHealth: number;
             lastChecked: number;
-        }
+            lastEtaText?: string;
+        };
     };
 }
 
@@ -28,14 +32,26 @@ interface AppConfig {
         dispatchTitle: string;
         orderTitle: string;
         campaignTitle: string;
+        objectivesHeader: string;
         factionLabel: string;
         liberationLabel: string;
+        defenseLabel: string;
+        invasionLevelLabel: string;
+        resistanceLabel: string;
         playersLabel: string;
         taskLabel: string;
         rewardLabel: string;
         rewardUnit: string;
         unknownPlanet: string;
         unknownFaction: string;
+        timeRemainingLabel: string;
+        statusLabel: string;
+        statusHold: string;
+        etaLabel: string;
+        etaOverTenDays: string;
+        etaFormat: string;
+        defenseTag: string;
+        liberationTag: string;
     };
 }
 
@@ -155,13 +171,28 @@ async function saveState(state: GameState): Promise<void> {
     await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
 }
 
-async function translateText(text: string): Promise<string> {
+async function translateText(text: string, state: GameState): Promise<string> {
     if (!text) return "";
+
+    if (!state.translations) state.translations = {};
+
+    if (state.translations[text]) {
+        return state.translations[text];
+    }
+
     try {
-        const result = await translate(text, { to: config.language });
-        return result.text;
-    } catch {
-        return text;
+        const sanitizedInput = text
+            .replace(/<i=\d+>/g, '**')
+            .replace(/<\/i>/g, '**');
+
+        const result = await translate(sanitizedInput, { to: config.language });
+        const translatedText = result.text;
+
+        state.translations[text] = translatedText;
+        return translatedText;
+    } catch (e) {
+        console.log("» translation warning: fallback to original text");
+        return formatMarkdown(text);
     }
 }
 
@@ -169,25 +200,33 @@ function formatMarkdown(text: string): string {
     return text ? text.replace(/<i=\d+>/g, '**').replace(/<\/i>/g, '**') : "";
 }
 
-function generateProgressBar(health: number, maxHealth: number): string {
-    if (!health || !maxHealth) return "[░░░░░░░░░░] 0.0%";
-    const percentage = 100 - ((health / maxHealth) * 100);
-    const clampedPercentage = Math.max(0, Math.min(100, percentage));
+function generateProgressBar(percentage: number, isDefense: boolean = false): string {
+    const clamped = Math.max(0, Math.min(100, percentage));
+    const totalBlocks = 14;
+    const filledBlocks = Math.round((clamped / 100) * totalBlocks);
+    const emptyBlocks = totalBlocks - filledBlocks;
 
-    const totalBlocks = 10;
-    const filledBlocks = Math.round((clampedPercentage / 100) * totalBlocks);
-    const emptyBlocks = Math.max(0, totalBlocks - filledBlocks);
-    return `[${'█'.repeat(filledBlocks)}${'░'.repeat(emptyBlocks)}] ${clampedPercentage.toFixed(1)}%`;
+    const bar = '▰'.repeat(filledBlocks) + '▱'.repeat(emptyBlocks);
+    const tag = isDefense ? config.templates.defenseTag : config.templates.liberationTag;
+
+    return `**[${tag}]** \`[${bar}]\` **${clamped.toFixed(1)}%**`;
 }
 
 function calculateETA(currentHealth: number, campaignId: string, previousCampaignState: any): string {
     if (!previousCampaignState || !previousCampaignState[campaignId]) return "";
 
     const prev = previousCampaignState[campaignId];
-    const healthDiff = prev.lastHealth - currentHealth;
     const timeDiffMs = Date.now() - prev.lastChecked;
 
-    if (healthDiff <= 0 || timeDiffMs <= 0) return "\n**Статус:** Опір ворога або регенерація";
+    if (timeDiffMs < MIN_SAMPLE_TIME_MS) {
+        return prev.lastEtaText || "";
+    }
+
+    const healthDiff = prev.lastHealth - currentHealth;
+
+    if (healthDiff <= 0) {
+        return `\n◈ **${config.templates.etaLabel}:** ${config.templates.statusHold}`;
+    }
 
     const healthPerMillisecond = healthDiff / timeDiffMs;
     const msToLiberation = currentHealth / healthPerMillisecond;
@@ -195,8 +234,15 @@ function calculateETA(currentHealth: number, campaignId: string, previousCampaig
     const totalHours = Math.floor(msToLiberation / (1000 * 60 * 60));
     const totalMinutes = Math.floor((msToLiberation % (1000 * 60 * 60)) / (1000 * 60));
 
-    if (totalHours > 240) return "\n**ETA:** Понад 10 днів";
-    return `\n⚡ **ETA:** ${totalHours}г ${totalMinutes}хв`;
+    if (totalHours > 240) {
+        return `\n◈ **${config.templates.etaLabel}:** ${config.templates.etaOverTenDays}`;
+    }
+
+    const formattedTime = config.templates.etaFormat
+        .replace('{hours}', totalHours.toString())
+        .replace('{mins}', totalMinutes.toString());
+
+    return `\n◈ **${config.templates.etaLabel}:** ${formattedTime}`;
 }
 
 async function fetchGameData(): Promise<any> {
@@ -235,27 +281,34 @@ async function fetchGameData(): Promise<any> {
     }
 }
 
-async function buildEmbed(item: any, type: "dispatches" | "orders" | "campaigns", previousState?: any): Promise<WebhookPayload> {
+async function buildEmbed(
+    item: any,
+    type: "dispatches" | "orders" | "campaigns",
+    state: GameState,
+    previousState?: any
+): Promise<WebhookPayload> {
     let title = "", description = "", color = 0, thumbnail = "", footerText: string | null = null;
 
     if (type === "dispatches") {
-        const translated = await translateText(item.message);
+        const translated = await translateText(item.message, state);
         title = config.templates.dispatchTitle;
-        description = formatMarkdown(translated);
+        description = translated;
         color = 16761088;
         thumbnail = getAssetUrl("dispatch", "dispatch");
     }
     else if (type === "orders") {
-        const translatedBriefing = await translateText(item.briefing);
+        const translatedBriefing = await translateText(item.briefing, state);
         let taskProgress = "";
         item.tasks?.forEach((task: any, idx: number) => {
             const current = item.progress?.[idx] || 0;
             let target = task.values?.[1] || task.values?.[2] || 1000000;
-            taskProgress += `${config.templates.taskLabel} ${idx + 1}: \`${current.toLocaleString()} / ${target.toLocaleString()}\`\n`;
+            const isDone = current >= target;
+            const checkbox = isDone ? "☑" : "☐";
+            taskProgress += `${checkbox} ${config.templates.taskLabel} ${idx + 1}: \`${current.toLocaleString()} / ${target.toLocaleString()}\`\n`;
         });
 
         title = config.templates.orderTitle;
-        description = `${formatMarkdown(translatedBriefing)}\n\n**Прогрес виконання:**\n${taskProgress}`;
+        description = `${translatedBriefing}\n\n**${config.templates.objectivesHeader}:**\n${taskProgress}`;
         color = 16761088;
         thumbnail = getAssetUrl("super_earth", "super_earth");
 
@@ -266,15 +319,54 @@ async function buildEmbed(item: any, type: "dispatches" | "orders" | "campaigns"
     else if (type === "campaigns") {
         const factionStr = item.faction ? item.faction.toLowerCase() : "unknown";
         const planetName = item.planet?.name || config.templates.unknownPlanet;
+        const hasEvent = Boolean(item.planet?.event);
+
+        let progressPercent = 0;
+        let progressHeader = "";
+        let extraStats = "";
+
+        if (hasEvent) {
+            const event = item.planet.event;
+            const health = event.health || 0;
+            const maxHealth = event.maxHealth || 1;
+            progressPercent = ((maxHealth - health) / maxHealth) * 100;
+            progressHeader = config.templates.defenseLabel;
+
+            const invasionLevel = event.level || Math.round(maxHealth / 20000);
+            extraStats += `◈ **${config.templates.invasionLevelLabel}:** \`${invasionLevel}\`\n`;
+
+            if (event.endTime) {
+                const diffMs = new Date(event.endTime).getTime() - Date.now();
+                if (diffMs > 0) {
+                    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                    const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                    extraStats += `◈ **${config.templates.timeRemainingLabel}:** \`${hours}г ${mins}хв\`\n`;
+                }
+            }
+        } else {
+            const health = item.planet?.health || 0;
+            const maxHealth = item.planet?.maxHealth || 1;
+            progressPercent = 100 - ((health / maxHealth) * 100);
+            progressHeader = config.templates.liberationLabel;
+
+            const regenPerSec = item.planet?.regenPerSecond || 0;
+            const regenPercent = (regenPerSec / maxHealth) * 3600 * 100;
+            if (regenPercent > 0) {
+                extraStats += `◈ **${config.templates.resistanceLabel}:** \`${regenPercent.toFixed(1)}%/год\`\n`;
+            }
+        }
+
         title = `${config.templates.campaignTitle}: ${planetName.toUpperCase()}`;
-
-        const health = item.planet?.health || 0;
-        const maxHealth = item.planet?.maxHealth || 0;
-        const progress = generateProgressBar(health, maxHealth);
+        const progressBar = generateProgressBar(progressPercent, hasEvent);
         const players = item.planet?.statistics?.playerCount || 0;
-        const etaText = calculateETA(health, item.id.toString(), previousState);
+        const currentHealth = hasEvent ? item.planet.event.health : item.planet?.health;
+        const etaText = calculateETA(currentHealth || 0, item.id.toString(), previousState);
 
-        description = `**${config.templates.factionLabel}:** ${item.faction || config.templates.unknownFaction}\n**${config.templates.liberationLabel}:**\n\`${progress}\`${etaText}\n\n👥 **${config.templates.playersLabel}:** ${players.toLocaleString()}`;
+        description = `◈ **${config.templates.factionLabel}:** ${item.faction || config.templates.unknownFaction}\n` +
+            `${extraStats}` +
+            `**${progressHeader}:**\n${progressBar}${etaText}\n\n` +
+            `👥 **${config.templates.playersLabel}:** ${players.toLocaleString()}`;
+
         color = factionStr.includes("terminid") ? 16752640 : factionStr.includes("automaton") ? 16711680 : 3447003;
         thumbnail = getAssetUrl(planetName, factionStr);
     }
@@ -285,64 +377,6 @@ async function buildEmbed(item: any, type: "dispatches" | "orders" | "campaigns"
     return { username: config.botName, embeds: [embed] };
 }
 
-async function syncCategory(liveItems: any[], stateCategoryMap: any, categoryName: "dispatches" | "orders" | "campaigns", previousState?: any): Promise<void> {
-    const liveMap = new Map(liveItems.map(item => [item.id.toString(), item]));
-    const liveIds = Array.from(liveMap.keys());
-    const savedIds = Object.keys(stateCategoryMap);
-
-    const toDelete = savedIds.filter(id => !liveIds.includes(id));
-    const toCreate = liveIds.filter(id => !savedIds.includes(id));
-    const toUpdate = liveIds.filter(id => savedIds.includes(id));
-
-    for (const id of toDelete) {
-        const messageId = categoryName === "campaigns" ? stateCategoryMap[id]?.messageId : stateCategoryMap[id];
-        if (messageId) await discord.delete(messageId);
-        delete stateCategoryMap[id];
-    }
-
-    for (const id of toCreate) {
-        const item = liveMap.get(id);
-        const payload = await buildEmbed(item, categoryName, previousState);
-
-        if (config.pingRoleId && (categoryName === "orders" || categoryName === "dispatches")) {
-            payload.content = `<@&${config.pingRoleId}>`;
-        }
-
-        const messageId = await discord.post(payload);
-        if (messageId) {
-            if (categoryName === "campaigns") {
-                stateCategoryMap[id] = {
-                    messageId,
-                    lastHealth: item.planet?.health || 0,
-                    lastChecked: Date.now()
-                };
-            } else {
-                stateCategoryMap[id] = messageId;
-            }
-        }
-    }
-
-    for (const id of toUpdate) {
-        const item = liveMap.get(id);
-        if (categoryName === "campaigns") {
-            const messageId = stateCategoryMap[id]?.messageId;
-            if (messageId) {
-                const payload = await buildEmbed(item, categoryName, previousState);
-                await discord.patch(messageId, payload);
-
-                stateCategoryMap[id].lastHealth = item.planet?.health || 0;
-                stateCategoryMap[id].lastChecked = Date.now();
-            }
-        } else if (categoryName === "orders") {
-            const messageId = stateCategoryMap[id];
-            if (messageId) {
-                const payload = await buildEmbed(item, categoryName);
-                await discord.patch(messageId, payload);
-            }
-        }
-    }
-}
-
 async function syncEngine(): Promise<void> {
     console.log("» initializing type-safe dashboard sync...");
     await loadAssetsMap();
@@ -350,12 +384,104 @@ async function syncEngine(): Promise<void> {
     const liveData = await fetchGameData();
     if (!liveData) return;
 
-    const state = await getState();
-    const previousCampaignCopy = JSON.parse(JSON.stringify(state.campaigns));
+    let state = await getState();
 
-    await syncCategory(liveData.dispatches, state.dispatches, "dispatches");
-    await syncCategory(liveData.orders, state.orders, "orders");
-    await syncCategory(liveData.campaigns, state.campaigns, "campaigns", previousCampaignCopy);
+    const liveDispatchIds: string[] = liveData.dispatches.map((d: any) => d.id.toString());
+    const liveOrderIds: string[] = liveData.orders.map((o: any) => o.id.toString());
+    const liveCampaignIds: string[] = liveData.campaigns.map((c: any) => c.id.toString());
+
+    const stateDispatchIds: string[] = Object.keys(state.dispatches);
+    const stateOrderIds: string[] = Object.keys(state.orders);
+    const stateCampaignIds: string[] = Object.keys(state.campaigns);
+
+    const hasStructureChanged =
+        liveDispatchIds.some((id: string) => !stateDispatchIds.includes(id)) ||
+        stateDispatchIds.some((id: string) => !liveDispatchIds.includes(id)) ||
+        liveOrderIds.some((id: string) => !stateOrderIds.includes(id)) ||
+        stateOrderIds.some((id: string) => !liveOrderIds.includes(id)) ||
+        liveCampaignIds.some((id: string) => !stateCampaignIds.includes(id)) ||
+        stateCampaignIds.some((id: string) => !liveCampaignIds.includes(id));
+
+    if (hasStructureChanged) {
+        console.log("» structural change detected! resetting terminal layout for strict hierarchy...");
+
+        for (const id of stateCampaignIds) {
+            const msgId = state.campaigns[id]?.messageId;
+            if (msgId) await discord.delete(msgId);
+        }
+        for (const id of stateOrderIds) {
+            if (state.orders[id]) await discord.delete(state.orders[id]);
+        }
+        for (const id of stateDispatchIds) {
+            if (state.dispatches[id]) await discord.delete(state.dispatches[id]);
+        }
+
+        const existingTranslations = state.translations || {};
+        state = { translations: existingTranslations, dispatches: {}, orders: {}, campaigns: {} };
+
+        for (const item of liveData.dispatches) {
+            const payload = await buildEmbed(item, "dispatches", state);
+            if (config.pingRoleId) payload.content = `<@&${config.pingRoleId}>`;
+            const msgId = await discord.post(payload);
+            if (msgId) state.dispatches[item.id.toString()] = msgId;
+        }
+
+        for (const item of liveData.orders) {
+            const payload = await buildEmbed(item, "orders", state);
+            if (config.pingRoleId) payload.content = `<@&${config.pingRoleId}>`;
+            const msgId = await discord.post(payload);
+            if (msgId) state.orders[item.id.toString()] = msgId;
+        }
+
+        for (const item of liveData.campaigns) {
+            const payload = await buildEmbed(item, "campaigns", state);
+            const msgId = await discord.post(payload);
+            if (msgId) {
+                const currentHealth = item.planet?.event?.health ?? item.planet?.health ?? 0;
+                state.campaigns[item.id.toString()] = {
+                    messageId: msgId,
+                    lastHealth: currentHealth,
+                    lastChecked: Date.now()
+                };
+            }
+        }
+    } else {
+        const previousCampaignCopy = JSON.parse(JSON.stringify(state.campaigns));
+
+        for (const item of liveData.dispatches) {
+            const msgId = state.dispatches[item.id.toString()];
+            if (msgId) {
+                const payload = await buildEmbed(item, "dispatches", state);
+                await discord.patch(msgId, payload);
+            }
+        }
+
+        for (const item of liveData.orders) {
+            const msgId = state.orders[item.id.toString()];
+            if (msgId) {
+                const payload = await buildEmbed(item, "orders", state);
+                await discord.patch(msgId, payload);
+            }
+        }
+
+        for (const item of liveData.campaigns) {
+            const campState = state.campaigns[item.id.toString()];
+            if (campState?.messageId) {
+                const payload = await buildEmbed(item, "campaigns", state, previousCampaignCopy);
+                await discord.patch(campState.messageId, payload);
+
+                const currentHealth = item.planet?.event?.health ?? item.planet?.health ?? 0;
+                const timeSinceLastCheck = Date.now() - (campState.lastChecked || 0);
+
+                if (timeSinceLastCheck >= MIN_SAMPLE_TIME_MS || !campState.lastChecked) {
+                    const etaText = calculateETA(currentHealth, item.id.toString(), previousCampaignCopy);
+                    campState.lastHealth = currentHealth;
+                    campState.lastChecked = Date.now();
+                    campState.lastEtaText = etaText;
+                }
+            }
+        }
+    }
 
     await saveState(state);
     console.log("» sync complete. dashboard is live.");

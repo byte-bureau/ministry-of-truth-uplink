@@ -6,13 +6,25 @@
         "dispatchTitle": "УКАЗ ВЕРХОВНОГО КОМАНДУВАННЯ",
         "orderTitle": "ОСНОВНИЙ НАКАЗ",
         "campaignTitle": "АКТИВНА КАМПАНІЯ",
+        "objectivesHeader": "ЦІЛІ КАМПАНІЇ",
         "factionLabel": "Фракція",
         "liberationLabel": "Прогрес звільнення",
+        "defenseLabel": "Прогрес оборони",
+        "invasionLevelLabel": "Рівень вторгнення",
+        "resistanceLabel": "Опір ворога",
         "playersLabel": "Гравців на планеті",
         "taskLabel": "Ціль",
         "rewardLabel": "Нагорода",
         "rewardUnit": "медалей",
         "unknownPlanet": "Невідома планета",
-        "unknownFaction": "Невідомо"
+        "unknownFaction": "Невідомо",
+        "timeRemainingLabel": "Залишилось часу",
+        "statusLabel": "Статус",
+        "statusHold": "Опір ворога / утримання",
+        "etaLabel": "Очікуваний час (ETA)",
+        "etaOverTenDays": "Понад 10 днів",
+        "etaFormat": "{hours}г {mins}хв",
+        "defenseTag": "ОБОРОНА",
+        "liberationTag": "ЗВІЛЬНЕННЯ"
     }
 }
