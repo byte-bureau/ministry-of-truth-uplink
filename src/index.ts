@@ -298,6 +298,13 @@ async function buildEmbed(
     }
     else if (type === "orders") {
         const translatedBriefing = await translateText(item.briefing, state);
+
+        const rawTitle = item.setting?.overrideTitle || item.title || item.overrideTitle;
+
+        const dynamicTitle = rawTitle
+            ? await translateText(rawTitle, state)
+            : config.templates.orderTitle;
+
         let taskProgress = "";
         item.tasks?.forEach((task: any, idx: number) => {
             const current = item.progress?.[idx] || 0;
@@ -307,7 +314,7 @@ async function buildEmbed(
             taskProgress += `${checkbox} ${config.templates.taskLabel} ${idx + 1}: \`${current.toLocaleString()} / ${target.toLocaleString()}\`\n`;
         });
 
-        title = config.templates.orderTitle;
+        title = dynamicTitle.toUpperCase();
         description = `${translatedBriefing}\n\n**${config.templates.objectivesHeader}:**\n${taskProgress}`;
         color = 16761088;
         thumbnail = getAssetUrl("super_earth", "super_earth");
@@ -332,7 +339,7 @@ async function buildEmbed(
             progressPercent = ((maxHealth - health) / maxHealth) * 100;
             progressHeader = config.templates.defenseLabel;
 
-            const invasionLevel = event.level || Math.round(maxHealth / 20000);
+            const invasionLevel = Math.round(maxHealth / 50000);
             extraStats += `◈ **${config.templates.invasionLevelLabel}:** \`${invasionLevel}\`\n`;
 
             if (event.endTime) {
